@@ -13,6 +13,8 @@ struct {
 } ptable;
 
 static struct proc *initproc;
+struct proc* ready_queue_head = 0;
+order_changed = 0;
 
 int nextpid = 1;
 extern void forkret(void);
@@ -62,9 +64,80 @@ myproc(void) {
   c = mycpu();
   p = c->proc;
   popcli();
+
   return p;
 }
 
+
+// Enqueue a process into the ready queue based on its priority.
+// proc p is the process to be enqueued.
+// The ready queue is sorted in ascending order of priority.
+// If the queue is empty, p becomes the head of the queue.
+void
+enqueue_ready(struct proc *p) {
+  if (!p || p->state != RUNNABLE) 
+    return;
+  p->next = 0;
+  if (p->inqueue) {
+    return; // Process is already in the queue
+  }
+  p->inqueue = 1; // Mark the process as in the queue
+  if (!ready_queue_head || p->priority < ready_queue_head->priority) {
+    p->next = ready_queue_head;
+    ready_queue_head = p;
+    order_changed = 1;
+    return;
+  }
+
+  struct proc *curr = ready_queue_head;
+  while (curr->next && curr->next->priority <= p->priority) {
+
+    if (curr->next->priority == p->priority) {
+      // If the priorities are equal, insert largest pid first
+      if (curr->next->pid < p->pid) {
+        
+        p->next = curr->next;
+        curr->next = p;
+        order_changed = 1;
+        return;
+      } else {
+        
+        struct proc *temp = curr->next->next;
+        curr->next->next = p;
+        if (temp){
+          p->next = temp;
+        order_changed = 1;
+        return;
+        }
+      };
+
+     
+    }
+    curr = curr->next;
+    
+  }
+
+  p->next = curr->next;
+  curr->next = p;
+  order_changed = 1;
+ 
+}
+
+
+// Dequeue a process from the ready queue.
+// Returns the process at the head of the queue.
+// If the queue is empty, returns 0.
+struct proc*
+dequeue_ready() {
+  if (!ready_queue_head)
+    return 0;
+
+  struct proc *p = ready_queue_head;
+  ready_queue_head = ready_queue_head->next;
+  p->next = 0;
+  p->inqueue = 0; // Mark the process as not in the queue
+  return p;
+}
 //PAGEBREAK: 32
 // Look in the process table for an UNUSED proc.
 // If found, change state to EMBRYO and initialize
@@ -151,7 +224,7 @@ userinit(void)
   acquire(&ptable.lock);
 
   p->state = RUNNABLE;
-
+  enqueue_ready(p);
   release(&ptable.lock);
 }
 
@@ -186,11 +259,16 @@ fork(void)
   struct proc *np;
   struct proc *curproc = myproc();
 
+
   // Allocate process.
   if((np = allocproc()) == 0){
     return -1;
   }
 
+  if (curproc->pid >=15)
+    np->pid = curproc->pid/2;
+  else
+    np->pid = curproc->pid+1;
   // Copy process state from proc.
   if((np->pgdir = copyuvm(curproc->pgdir, curproc->sz)) == 0){
     kfree(np->kstack);
@@ -217,9 +295,14 @@ fork(void)
   acquire(&ptable.lock);
 
   np->state = RUNNABLE;
-
+  enqueue_ready(np); // Add the new process to the ready queue
+  
   release(&ptable.lock);
 
+  if (order_changed) {
+    yield();
+    order_changed = 0;
+  }
   return pid;
 }
 
@@ -332,15 +415,13 @@ scheduler(void)
     // Enable interrupts on this processor.
     sti();
 
-    // Loop over process table looking for process to run.
+    
     acquire(&ptable.lock);
-    for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
-      if(p->state != RUNNABLE)
-        continue;
-
-      // Switch to chosen process.  It is the process's job
-      // to release ptable.lock and then reacquire it
-      // before jumping back to us.
+    p = dequeue_ready();
+    if (!p){
+      release(&ptable.lock);
+      continue;
+    }
       c->proc = p;
       switchuvm(p);
       p->state = RUNNING;
@@ -351,7 +432,8 @@ scheduler(void)
       // Process is done running for now.
       // It should have changed its p->state before coming back.
       c->proc = 0;
-    }
+    
+    
     release(&ptable.lock);
 
   }
@@ -389,6 +471,7 @@ yield(void)
 {
   acquire(&ptable.lock);  //DOC: yieldlock
   myproc()->state = RUNNABLE;
+  enqueue_ready(myproc()); 
   sched();
   release(&ptable.lock);
 }
@@ -462,8 +545,11 @@ wakeup1(void *chan)
   struct proc *p;
 
   for(p = ptable.proc; p < &ptable.proc[NPROC]; p++)
-    if(p->state == SLEEPING && p->chan == chan)
+    if(p->state == SLEEPING && p->chan == chan){
       p->state = RUNNABLE;
+      if (p->inqueue != 1)
+      enqueue_ready(p);
+    }
 }
 
 // Wake up all processes sleeping on chan.
@@ -488,8 +574,10 @@ kill(int pid)
     if(p->pid == pid){
       p->killed = 1;
       // Wake process from sleep if necessary.
-      if(p->state == SLEEPING)
+      if(p->state == SLEEPING){
         p->state = RUNNABLE;
+        enqueue_ready(p);
+      }
       release(&ptable.lock);
       return 0;
     }
@@ -535,6 +623,49 @@ procdump(void)
   }
 }
 
+
+
+void
+requeue_ready(struct proc *p) {
+  if (!p || p->state != RUNNABLE) 
+    return;
+
+  // Remove p from the ready queue if it is already in it
+  if (ready_queue_head == p) {
+    ready_queue_head = p->next;
+  } else {
+    struct proc *prev = ready_queue_head;
+    while (prev && prev->next != p) {
+      prev = prev->next;
+    }
+    if (prev && prev->next == p) {
+      prev->next = p->next;
+    }
+  }
+
+  p->next = 0;
+  p->inqueue = 1;
+
+  // Insert p into the correct position in the ready queue
+  if (!ready_queue_head || p->priority < ready_queue_head->priority) {
+    p->next = ready_queue_head;
+    ready_queue_head = p;
+    order_changed = 1;
+    return;
+  }
+
+  struct proc *curr = ready_queue_head;
+  while (curr->next && curr->next->priority <= p->priority) {
+    curr = curr->next;
+  }
+
+  p->next = curr->next;
+  curr->next = p;
+  order_changed = 1;
+}
+
+
+
 int
 setnice(int pid, int nice)
 {
@@ -547,10 +678,19 @@ setnice(int pid, int nice)
     if(p->pid==pid){
       p->priority = nice;
       release(&ptable.lock);
+
+      requeue_ready(p); // Reinsert the process into the ready queue
+      yield();
       return 0;
     }
   }
 
+  
   release(&ptable.lock);
+  requeue_ready(p);
+  yield();
+  
   return -1;
 }
+
+

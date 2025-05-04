@@ -12,6 +12,7 @@ struct cpu {
 
 extern struct cpu cpus[NCPU];
 extern int ncpu;
+extern int order_changed;
 
 //PAGEBREAK: 17
 // Saved registers for kernel context switches.
@@ -50,6 +51,8 @@ struct proc {
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
   int priority;                // Process priority
+  struct proc *next;         // Next process in the list
+  int inqueue;                // Queue index
 };
 
 // Process memory is laid out contiguously, low addresses first:
