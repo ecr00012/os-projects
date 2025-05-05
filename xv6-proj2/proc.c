@@ -14,7 +14,7 @@ struct {
 
 static struct proc *initproc;
 struct proc* ready_queue_head = 0;
-order_changed = 0;
+int order_changed = 0;
 
 int nextpid = 1;
 extern void forkret(void);
@@ -663,8 +663,6 @@ requeue_ready(struct proc *p) {
   curr->next = p;
   order_changed = 1;
 }
-
-
 
 int
 setnice(int pid, int nice)
