@@ -674,19 +674,20 @@ setnice(int pid, int nice)
   acquire(&ptable.lock);
   for( p = ptable.proc; p < &ptable.proc[NPROC]; p++){
     if(p->pid==pid){
+     ;
       p->priority = nice;
       release(&ptable.lock);
 
       requeue_ready(p); // Reinsert the process into the ready queue
-      yield();
+      if (nice > myproc()->priority) // Check if the priority has increased
+      yield(); // Yield if the priority has increased
       return 0;
     }
   }
 
   
   release(&ptable.lock);
-  requeue_ready(p);
-  yield();
+  
   
   return -1;
 }
